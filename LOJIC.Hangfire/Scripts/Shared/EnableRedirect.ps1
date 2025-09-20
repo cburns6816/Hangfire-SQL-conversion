@@ -1,0 +1,1 @@
+﻿c:\Windows\system32\inetsrv\appcmd.exe set config "Default Web Site" /section:httpRedirect /enabled:true /exactDestination:true /destination:https://www.lojic.org/maintenance

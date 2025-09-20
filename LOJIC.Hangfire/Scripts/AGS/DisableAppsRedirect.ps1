@@ -1,0 +1,2 @@
+﻿c:\Windows\system32\inetsrv\appcmd.exe set config "Default Web Site" -section:system.webServer/rewrite/rules /[name=`'Maintenance`'].enabled:false
+c:\Windows\system32\inetsrv\appcmd.exe set config "Default Web Site" -section:system.webServer/rewrite/rules /[name=`'Https`'].enabled:true

@@ -1,0 +1,259 @@
+# ASP.NET
+
+# Build and test ASP.NET projects.
+# Add steps that publish symbols, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/apps/aspnet/build-aspnet-4
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+
+stages:
+- stage: 'Build'
+  displayName: 'Build the Hangfire Orchestrator AppCode'
+  jobs:
+  - job: 'BuildCode'
+    displayName: 'Build .NET Core AppCode'
+    pool:
+      vmImage: 'windows-latest'
+    
+    variables:
+      dotnetSdkVersion: '5.x'
+        
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Setup .NET SDK $(dotnetSdkVersion)'
+      inputs:
+        version: '$(dotnetSdkVersion)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore project dependencies'
+      inputs:
+        command: 'restore'
+        arguments: '-r win10-x64'
+        projects: 'LOJIC.Orchestration.sln'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build LOJIC.Orchestration.Data - $(buildConfiguration)'
+      inputs:
+        command: 'build'
+        arguments: '--no-restore -r win10-x64 --configuration $(buildConfiguration)'
+        projects: 'LOJIC.Orchestration.Data\LOJIC.Orchestration.Data.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build LOJIC.Hangfire - $(buildConfiguration)'
+      inputs:
+        command: 'build'
+        arguments: '--no-restore -r win10-x64 --configuration $(buildConfiguration)'
+        projects: 'LOJIC.Hangfire\LOJIC.Hangfire.csproj'
+    
+    - task: DotNetCoreCLI@2
+      displayName: 'Build LOJIC.Orchestration - $(buildConfiguration)'
+      inputs:
+        command: 'build'
+        arguments: '--no-restore -r win10-x64 --configuration $(buildConfiguration)'
+        projects: 'LOJIC.Orchestration\LOJIC.Orchestration.csproj'
+
+
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish the project - $(buildConfiguration)'
+      inputs:
+        command: 'publish'
+        projects: 'LOJIC.Orchestration\LOJIC.Orchestration.csproj'
+        publishWebProjects: false
+        arguments: '--no-build --self-contained -r win10-x64 --configuration $(buildConfiguration) --output $(build.artifactStagingDirectory)/$(buildConfiguration)'
+        zipAfterPublish: true
+    - task: CopyFiles@2
+      inputs:
+        Contents: 'DeploymentScripts/*'
+        TargetFolder: '$(build.artifactStagingDirectory)'
+        OverWrite: true
+    - publish: '$(build.artifactStagingDirectory)'
+      artifact: drop
+
+- stage: 'Development_Deployment'
+  displayName: 'Deploy to the Development environment'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables.isMain, true))
+  jobs:
+  - deployment: HangfireDeploy
+    displayName: Hangfire Dev Deployment
+    environment: 
+      name: Development
+      resourceType: VirtualMachine
+    variables:
+    - group: 'Hangfire_Dev'
+    strategy:
+      rolling:
+        maxParallel: 2
+        preDeploy:
+          steps:
+          - download: current
+            artifact: drop
+          - task: PowerShell@2
+            name: StopServiceStep
+            inputs:
+              filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StopService.ps1"
+        deploy:
+          steps:
+            - task: FileTransform@1
+              name: TransofrmAppSettings
+              inputs:
+                folderPath: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                fileType: 'json'
+                targetFiles: 'appsettings.json'
+            - task: ExtractFiles@1
+              name: ExtractCode
+              inputs:
+                archiveFilePatterns: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                destinationFolder: 'c:\Hangfire'
+                cleanDestinationFolder: false
+                overwriteExistingFiles: true
+        routeTraffic:
+          steps:
+            - task: PowerShell@2
+              name: StartHangfireServiceStep
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StartService.ps1"
+                  
+        postRouteTraffic:
+          steps:
+            - task: PowerShell@2
+              name: HealthCheckHangfireService
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/Healthcheck.ps1"
+        on:
+          failure:
+            steps:
+              - script: echo "Deployment failed! See logs for details."
+                name: FailedStepLog
+          success:
+            steps:
+              - script: echo "Good deployment!"
+                name: DeploySuccessLog
+- stage: 'Test_Deployment'
+  displayName: 'Deploy to the Test environment'
+  dependsOn: Development_Deployment
+  condition: and(succeeded(), eq(variables.isMain, true))
+  jobs:
+  - deployment: HangfireDeploy
+    displayName: Hangfire Test Deployment
+    environment: 
+      name: Test
+      resourceType: VirtualMachine
+    variables:
+    - group: 'Hangfire_Test'
+    strategy:
+      rolling:
+        maxParallel: 2
+        preDeploy:
+          steps:
+          - download: current
+            artifact: drop
+          - task: PowerShell@2
+            name: StopServiceStep
+            inputs:
+              filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StopService.ps1"
+        deploy:
+          steps:
+            - task: FileTransform@1
+              name: TransofrmAppSettings
+              inputs:
+                folderPath: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                fileType: 'json'
+                targetFiles: 'appsettings.json'
+            - task: ExtractFiles@1
+              name: ExtractCode
+              inputs:
+                archiveFilePatterns: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                destinationFolder: 'c:\Hangfire'
+                cleanDestinationFolder: false
+                overwriteExistingFiles: true
+        routeTraffic:
+          steps:
+            - task: PowerShell@2
+              name: StartHangfireServiceStep
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StartService.ps1"
+                  
+        postRouteTraffic:
+          steps:
+            - task: PowerShell@2
+              name: HealthCheckHangfireService
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/Healthcheck.ps1"
+        on:
+          failure:
+            steps:
+              - script: echo "Deployment failed! See logs for details."
+                name: FailedStepLog
+          success:
+            steps:
+              - script: echo "Good deployment!"
+                name: DeploySuccessLog
+- stage: 'Production_Deployment'
+  displayName: 'Deploy to the Production environment'
+  dependsOn: Test_Deployment
+  condition: and(succeeded(), eq(variables.isMain, true))
+  jobs:
+  - deployment: HangfireDeploy
+    displayName: Hangfire Production Deployment
+    environment: 
+      name: Production
+      resourceType: VirtualMachine
+    variables:
+    - group: 'Hangfire_Production'
+    strategy:
+      rolling:
+        maxParallel: 2
+        preDeploy:
+          steps:
+          - download: current
+            artifact: drop
+          - task: PowerShell@2
+            name: StopServiceStep
+            inputs:
+              filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StopService.ps1"
+        deploy:
+          steps:
+            - task: FileTransform@1
+              name: TransofrmAppSettings
+              inputs:
+                folderPath: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                fileType: 'json'
+                targetFiles: 'appsettings.json'
+            - task: ExtractFiles@1
+              name: ExtractCode
+              inputs:
+                archiveFilePatterns: '$(Pipeline.Workspace)/**/LOJIC.Orchestration.zip'
+                destinationFolder: 'c:\Hangfire'
+                cleanDestinationFolder: false
+                overwriteExistingFiles: true
+        routeTraffic:
+          steps:
+            - task: PowerShell@2
+              name: StartHangfireServiceStep
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/StartService.ps1"
+                  
+        postRouteTraffic:
+          steps:
+            - task: PowerShell@2
+              name: HealthCheckHangfireService
+              inputs:
+                filePath: "$(Pipeline.Workspace)/drop/DeploymentScripts/Healthcheck.ps1"
+        on:
+          failure:
+            steps:
+              - script: echo "Deployment failed! See logs for details."
+                name: FailedStepLog
+          success:
+            steps:
+              - script: echo "Good deployment!"
+                name: DeploySuccessLog

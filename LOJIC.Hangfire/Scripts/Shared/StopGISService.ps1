@@ -1,0 +1,1 @@
+﻿sc.exe stop "ArcGIS Server"
